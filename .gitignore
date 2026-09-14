@@ -1,0 +1,43 @@
+# Secrets
+cloudflare_api_token.txt
+gemini_api_key.txt
+.webui_secret_key
+.env
+.env.*
+.dev.vars
+*api_key*
+*token*
+
+# Runtime state and generated output
+data/
+output/
+*.log
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Installed dependencies and caches
+venv/
+venv-broken-after-move/
+node_modules/
+__pycache__/
+*.py[cod]
+.wrangler/
+
+# July experimental and historical material
+\!testenvironment/
+dsa_experimental.py
+dsa_experimental.py.bak_*
+patch_dsa_experimental_tagging.py
+EXP_backtag.py
+backtag-output/
+scripts/safety/
+
+# macOS and editor files
+.DS_Store
+*~
+*.swp
+*.swo
