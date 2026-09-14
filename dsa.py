@@ -77,8 +77,9 @@ SOURCES: list[SourceSpec] = [
     SourceSpec("spadework", "Spadework", "https://spade.work/rss/", "rss"),
     SourceSpec("power_map", "Power Map Mag (Groundwork)", "https://powermapmag.substack.com/feed", "rss"),
     SourceSpec("building_up", "Building Up (Groundwork)", "https://www.groundworkdsa.com/building-up?format=rss", "rss"),
-    SourceSpec("zenith", "Zenith (Red Star)", "https://redstarcaucus.org/tag/zenith/rss/", "rss"),
-    SourceSpec("red_star_news", "Red Star Newsletter", "https://redstarcaucus.org/tag/newsletter/rss/", "rss"),
+    # Sitewide Ghost feed prevents untagged essays, interviews, and statements from being missed.
+    # Publication categories are retained as metadata instead of defining discovery coverage.
+    SourceSpec("red_star", "Red Star", "https://redstarcaucus.org/rss/", "rss"),
     SourceSpec("twenty_first_century_socialism", "21st Century Socialism", "https://www.21csocialism.org/rss/", "rss"),
     SourceSpec("liberation", "Liberation", "https://www.liberationcaucus.org/feed/", "rss"),
     SourceSpec("lsc_pamphlets", "LSC Pamphlets", "https://dsa-lsc.org/category/pamphlets/feed/", "rss"),
@@ -313,8 +314,8 @@ SOURCE_DOM_CONFIGS = {
         "exclude": [".subscribe-widget", ".post-footer", ".post-ufi", ".button-wrapper"]
     },
     "redstarcaucus.org": {
-        "body": ".gh-content",
-        "exclude": [".gh-post-upgrade-cta", ".kg-bookmark-card"]
+        "body": "article.article.post > section.gh-content, article.article.post .gh-content, section.gh-content.gh-canvas, .gh-content",
+        "exclude": [".gh-post-upgrade-cta", ".kg-cta-card", ".kg-signup-card", ".kg-product-card", ".footer-cta", ".read-more-wrap", ".article-byline", ".article-header", ".post-card"]
     },
     "www.21csocialism.org": {
         "body": "article.article.post > section.gh-content, article.article.post .gh-content, section.gh-content.gh-canvas, .gh-content",
@@ -968,12 +969,19 @@ def init_db(reset: bool = False) -> None:
                 article_text TEXT,
                 article_text_method TEXT,
                 article_classification TEXT,
-                local_text_path TEXT
+                local_text_path TEXT,
+                source_guid TEXT,
+                canonical_url TEXT,
+                modified_at TEXT,
+                tags_json TEXT,
+                image_caption TEXT,
+                reading_time TEXT,
+                content_hash TEXT
             )
         """)
         for table, cols in {
             "candidates": {"source_key":"TEXT", "source":"TEXT", "title":"TEXT", "url":"TEXT", "pub_date_hint":"TEXT", "snippet":"TEXT", "method":"TEXT", "selected":"INTEGER DEFAULT 0", "ai_candidate_status":"TEXT DEFAULT ''", "ai_reason":"TEXT DEFAULT ''"},
-            "intel_feed": {"candidate_id":"TEXT", "source_key":"TEXT", "source":"TEXT", "title":"TEXT", "link":"TEXT", "pub_date":"TEXT", "author":"TEXT", "description":"TEXT", "content_type":"TEXT", "image_url":"TEXT", "raw_source":"TEXT", "local_source_path":"TEXT", "ai_metadata_json":"TEXT", "date_fetched":"TEXT", "metadata_status":"TEXT", "article_text":"TEXT", "article_text_method":"TEXT", "article_classification":"TEXT", "local_text_path":"TEXT"},
+            "intel_feed": {"candidate_id":"TEXT", "source_key":"TEXT", "source":"TEXT", "title":"TEXT", "link":"TEXT", "pub_date":"TEXT", "author":"TEXT", "description":"TEXT", "content_type":"TEXT", "image_url":"TEXT", "raw_source":"TEXT", "local_source_path":"TEXT", "ai_metadata_json":"TEXT", "date_fetched":"TEXT", "metadata_status":"TEXT", "article_text":"TEXT", "article_text_method":"TEXT", "article_classification":"TEXT", "local_text_path":"TEXT", "source_guid":"TEXT", "canonical_url":"TEXT", "modified_at":"TEXT", "tags_json":"TEXT", "image_caption":"TEXT", "reading_time":"TEXT", "content_hash":"TEXT"},
         }.items():
             existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
             for col, decl in cols.items():
@@ -1121,6 +1129,15 @@ def parse_any_feed(data: bytes, source: SourceSpec) -> list[dict[str, Any]]:
             pub_date = find_val(item, "pubDate") or find_val(item, "date")
             author = find_val(item, "creator") or find_val(item, "author")
             summary = find_val(item, "description") or find_val(item, "summary")
+            source_guid = find_val(item, "guid")
+            categories = []
+            for child in list(item):
+                local_name = child.tag.rsplit("}", 1)[-1]
+                if local_name == "category" and child.text:
+                    value = normalize_space(child.text)
+                    if value and value not in categories:
+                        categories.append(value)
+            body_html_hint = find_val(item, "encoded")
 
             image_url = ""
             enclosure = item.find("enclosure")
@@ -1141,6 +1158,9 @@ def parse_any_feed(data: bytes, source: SourceSpec) -> list[dict[str, Any]]:
                     "author": author,
                     "snippet": summary,
                     "image_url": image_url,
+                    "source_guid": source_guid,
+                    "tags": categories,
+                    "body_html_hint": body_html_hint,
                     "method": "rss_feed"
                 })
 
@@ -1156,6 +1176,9 @@ def parse_any_feed(data: bytes, source: SourceSpec) -> list[dict[str, Any]]:
         )
         c["author_hint"] = item.get("author", "")
         c["image_url_hint"] = item.get("image_url", "")
+        c["source_guid"] = item.get("source_guid", "")
+        c["tags"] = item.get("tags", [])
+        c["body_html_hint"] = item.get("body_html_hint", "")
         candidates.append(c)
     return candidates
 
@@ -1252,6 +1275,29 @@ def mechanical_metadata(raw_html: str, url: str, fallback_title: str, fallback_d
                     break
     pub_date = pub_date or fallback_date
 
+    modified_at = meta_content("article:modified_time", "dateModified", "last-modified")
+    canonical_url = ""
+    canonical = soup.find("link", rel=lambda value: value and "canonical" in value)
+    if canonical and canonical.get("href"):
+        canonical_url = canonicalize_url(urllib.parse.urljoin(url, canonical.get("href")))
+    canonical_url = canonical_url or canonicalize_url(url)
+
+    tags = []
+    for tag in soup.find_all("meta", attrs={"property": "article:tag"}):
+        value = normalize_space(tag.get("content", ""))
+        if value and value not in tags:
+            tags.append(value)
+
+    image_caption = ""
+    caption = soup.select_one("figure.article-image figcaption, figure.gh-article-image figcaption, .kg-image-card figcaption")
+    if caption:
+        image_caption = normalize_space(caption.get_text(" "))
+
+    reading_time = ""
+    reading = soup.select_one(".byline-reading-time, .gh-article-reading-time")
+    if reading:
+        reading_time = normalize_space(reading.get_text(" "))
+
     description = meta_content("og:description", "twitter:description", "description")
     if not description or len(description) < 12:
         paragraphs = []
@@ -1293,6 +1339,11 @@ def mechanical_metadata(raw_html: str, url: str, fallback_title: str, fallback_d
         "description": normalize_space(description),
         "image_url": image,
         "content_type": content_type,
+        "canonical_url": canonical_url,
+        "modified_at": modified_at,
+        "tags": tags,
+        "image_caption": image_caption,
+        "reading_time": reading_time,
     }
 
 
@@ -1316,7 +1367,12 @@ def get_robust_metadata(raw_html: str, url: str, c: dict[str, Any]) -> dict[str,
         "pub_date": normalize_space(pub_date),
         "description": normalize_space(short(description, 350)),
         "image_url": image_url,
-        "content_type": content_type
+        "content_type": content_type,
+        "canonical_url": html_meta.get("canonical_url") or canonicalize_url(url),
+        "modified_at": html_meta.get("modified_at", ""),
+        "tags": html_meta.get("tags") or c.get("tags") or [],
+        "image_caption": html_meta.get("image_caption", ""),
+        "reading_time": html_meta.get("reading_time", ""),
     }
 
 
@@ -1414,14 +1470,23 @@ def process_candidate(c: dict[str, Any], args: argparse.Namespace) -> None:
             if getattr(args, "skip_short_articles", False) and len(article_text) < min_chars:
                 status = "skipped_short_article"
 
+    canonical_url = meta.get("canonical_url") or canonicalize_url(c["url"])
+    content_hash = hashlib.sha256(normalize_space(article_text).encode("utf-8", errors="ignore")).hexdigest() if article_text else ""
     row = {
         "id": article_id,
         "candidate_id": c["id"],
         "source_key": c["source_key"],
         "source": c["source"],
         "title": meta.get("title") or c["title"],
-        "link": c["url"],
+        "link": canonical_url,
         "pub_date": meta.get("pub_date") or c.get("pub_date_hint", ""),
+        "source_guid": c.get("source_guid", ""),
+        "canonical_url": canonical_url,
+        "modified_at": meta.get("modified_at", ""),
+        "tags_json": json.dumps(meta.get("tags") or c.get("tags") or [], ensure_ascii=False),
+        "image_caption": meta.get("image_caption", ""),
+        "reading_time": meta.get("reading_time", ""),
+        "content_hash": content_hash,
         "author": meta.get("author") or "Author unknown",
         "description": meta.get("description") or c.get("snippet", ""),
         "content_type": meta.get("content_type") or "article",
@@ -1682,7 +1747,7 @@ RSS_CAUCUS_MAP = {
     "Liberation": ["Liberation"],
     "Marxist Unity Group": ["Marxist Unity Group", "Light & Air (MUG)"],
     "North Star": ["North Star Caucus Blog"],
-    "Red Star": ["Zenith (Red Star)", "Red Star Newsletter"],
+    "Red Star": ["Red Star", "Zenith (Red Star)", "Red Star Newsletter"],
     "21st Century Socialism": ["21st Century Socialism"],
     "Reform and Revolution": ["Reform & Revolution"],
     "Bread and Roses": ["Socialist Call (Bread & Roses)"],
@@ -1858,7 +1923,7 @@ def generate_dashboard() -> None:
         "Emerge": {"sources": ["Emerge", "Partisan Magazine"], "color": "rgb(222, 112, 122)", "text": "white"},
         "Marxist Unity Group": {"sources": ["Marxist Unity Group", "Light & Air (MUG)"], "color": "rgb(117, 139, 245)", "text": "white"},
         "Reform and Revolution": {"sources": ["Reform & Revolution"], "color": "rgb(111, 51, 64)", "text": "white"},
-        "Red Star": {"sources": ["Zenith (Red Star)", "Red Star Newsletter"], "color": "rgb(236, 97, 92)", "text": "white"},
+        "Red Star": {"sources": ["Red Star", "Zenith (Red Star)", "Red Star Newsletter"], "color": "rgb(236, 97, 92)", "text": "white"},
         "21st Century Socialism": {"sources": ["21st Century Socialism"], "color": "#ffcd00", "text": "black"},
         "Liberation": {"sources": ["Liberation"], "color": "rgb(217, 57, 51)", "text": "white"}
     }
