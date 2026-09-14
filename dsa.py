@@ -69,6 +69,7 @@ class SourceSpec:
 
 
 SOURCES: list[SourceSpec] = [
+    SourceSpec("springs_of_revolution", "Springs of Revolution", "https://sor4dsa.substack.com/feed", "rss"),
     SourceSpec("north_star", "North Star Caucus Blog", "https://www.dsanorthstar.org/1/feed", "rss"),
     SourceSpec("reform_revolution", "Reform & Revolution", "https://reformandrevolution.org/feed/", "rss"),
     SourceSpec("socialist_call", "Socialist Call (Bread & Roses)", "https://socialistcall.com/feed/", "rss"),
@@ -273,6 +274,10 @@ def html_to_text(value: str) -> str:
 # Source-Specific DOM Extraction Engine
 # -----------------------------------------------------------------------------
 SOURCE_DOM_CONFIGS = {
+    "sor4dsa.substack.com": {
+        "body": "div.body.markup, div.available-content div.body, article.typography.newsletter-post, article.newsletter-post",
+        "exclude": [".subscription-widget-wrap", ".subscribe-widget", ".post-ufi", ".comments-section", ".footer-wrap"]
+    },
     "www.groundworkdsa.com": {
         "body": ".blog-item-content, .entry-content, article.h-entry",
         "exclude": [".item-pagination", ".related-posts", ".sqs-share-buttons"]
@@ -1739,6 +1744,7 @@ def generate_processed_links_tree() -> None:
 # RSS 2.0 feed and dynamic Cloudflare Pages endpoint
 # -----------------------------------------------------------------------------
 RSS_CAUCUS_MAP = {
+    "Springs of Revolution": ["Springs of Revolution"],
     "Groundwork": ["Building Up (Groundwork)", "Power Map Mag (Groundwork)"],
     "Caracol": ["Caracol"],
     "Communist Caucus": ["Communist Caucus Bulletin", "Spadework"],
@@ -1925,6 +1931,7 @@ def generate_dashboard() -> None:
         "Reform and Revolution": {"sources": ["Reform & Revolution"], "color": "rgb(111, 51, 64)", "text": "white"},
         "Red Star": {"sources": ["Red Star", "Zenith (Red Star)", "Red Star Newsletter"], "color": "rgb(236, 97, 92)", "text": "white"},
         "21st Century Socialism": {"sources": ["21st Century Socialism"], "color": "#ffcd00", "text": "black"},
+        "Springs of Revolution": {"sources": ["Springs of Revolution"], "color": "rgb(164, 75, 115)", "text": "white"},
         "Liberation": {"sources": ["Liberation"], "color": "rgb(217, 57, 51)", "text": "white"}
     }
     
