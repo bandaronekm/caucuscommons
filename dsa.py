@@ -21,6 +21,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -114,6 +115,24 @@ NAV_TITLE_RE = re.compile(
     r"^(home|about|contact|subscribe|sign in|join dsa|join mug|points of unity|rules & code of conduct|"
     r"latest articles|light & air magazine|skip to content|menu|close menu|powered by wordpress|to the top)",
     re.I,
+)
+
+READER_USER_AGENT = (
+    "Caucus-Commons-RSS-Reader/1.0 "
+    "(+https://onquarryrd.pages.dev/)"
+)
+FEED_ACCEPT = (
+    "application/rss+xml, application/atom+xml, "
+    "application/xml;q=0.9, text/xml;q=0.8, */*;q=0.1"
+)
+ARTICLE_ACCEPT = (
+    "text/html, application/xhtml+xml;q=0.9, "
+    "application/xml;q=0.5, */*;q=0.1"
+)
+ANTI_BOT_HTML_MARKERS = (
+    b"making sure you're not a bot",
+    b"/.within.website/",
+    b"proof of work",
 )
 
 
@@ -876,10 +895,35 @@ def format_display_date(value: str) -> str:
     return normalize_space(value) if value else "Date unknown"
 
 
-def fetch_url(url: str, timeout: int = 35) -> Optional[bytes]:
+def classify_response_payload(data: bytes) -> str:
+    """Classify transport bytes before a parser mistakes a block page for content."""
+    stripped = (data or b"").lstrip()
+    lower = stripped[:30000].lower()
+    if not stripped:
+        return "empty"
+    if stripped.startswith((b"<?xml", b"<rss", b"<feed")):
+        return "xml"
+    if stripped.startswith((b"<!doctype html", b"<!DOCTYPE html", b"<html")):
+        if b"429 too many requests" in lower:
+            return "rate_limit_html"
+        if any(marker in lower for marker in ANTI_BOT_HTML_MARKERS):
+            return "anti_bot_html"
+        return "html"
+    if stripped.startswith(b"%PDF-"):
+        return "pdf"
+    return "other"
+
+
+def fetch_url(
+    url: str,
+    timeout: int = 35,
+    purpose: str = "article",
+) -> Optional[bytes]:
+    """Fetch a feed or article with an honest, purpose-specific request profile."""
+    is_feed = purpose == "feed"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "User-Agent": READER_USER_AGENT,
+        "Accept": FEED_ACCEPT if is_feed else ARTICLE_ACCEPT,
         "Accept-Language": "en-US,en;q=0.8",
         "Accept-Encoding": "identity, gzip",
     }
@@ -893,7 +937,32 @@ def fetch_url(url: str, timeout: int = 35) -> Optional[bytes]:
                     data = gzip.decompress(data)
                 except Exception as gz_e:
                     log(f"  [!] gzip decompress failed for {url}: {type(gz_e).__name__}: {gz_e}")
+
+            payload_kind = classify_response_payload(data)
+            if payload_kind == "anti_bot_html":
+                log(f"  [X] anti-bot HTML returned instead of {purpose} content: {url}")
+                return None
+            if payload_kind == "rate_limit_html":
+                log(f"  [X] rate-limit HTML returned instead of {purpose} content: {url}")
+                return None
+            if is_feed and payload_kind != "xml":
+                content_type = resp.headers.get("Content-Type") or "unknown"
+                log(
+                    f"  [X] expected XML feed but received {payload_kind} "
+                    f"({content_type}) from {url}"
+                )
+                return None
             return data
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            retry_after = e.headers.get("Retry-After") or "not supplied"
+            log(
+                f"  [X] rate limited fetching {url}: HTTP 429; "
+                f"Retry-After={retry_after}"
+            )
+            return None
+        log(f"  [X] fetch failed {url}: HTTPError: {e.code} {e.reason}")
+        return None
     except Exception as e:
         log(f"  [X] fetch failed {url}: {type(e).__name__}: {e}")
         return None
@@ -1042,9 +1111,18 @@ def sanitize_xml_payload(data: bytes) -> bytes:
 
 
 def parse_any_feed(data: bytes, source: SourceSpec) -> list[dict[str, Any]]:
+    parse_error: Optional[Exception] = None
     try:
-        root = ET.fromstring(sanitize_xml_payload(data))
+        root = ET.fromstring(data)
     except Exception as e:
+        parse_error = e
+        try:
+            root = ET.fromstring(sanitize_xml_payload(data))
+        except Exception as sanitized_error:
+            parse_error = sanitized_error
+            root = None
+    if root is None:
+        e = parse_error or ValueError("unknown XML parse failure")
         log(f"  [!] XML parse warning on {source.name}: {e}; trying BeautifulSoup XML fallback")
         soup = BeautifulSoup(decode_bytes(data), "xml")
         items = soup.find_all("item")
@@ -1432,7 +1510,7 @@ def process_candidate(c: dict[str, Any], args: argparse.Namespace) -> None:
     article_text_method = ""
     article_classification = ""
     local_text_path = ""
-    data = fetch_url(c["url"], timeout=45)
+    data = fetch_url(c["url"], timeout=45, purpose="article")
 
     if not data:
         raw_source = "[Failed to fetch source.]"
@@ -1619,7 +1697,10 @@ def discover_all(selected_source: Optional[str], resolved_host: str = "") -> lis
         if selected_source and selected_source.lower() not in source.key.lower() and selected_source.lower() not in source.name.lower():
             continue
         log(f"\nDiscovering {source.name}...")
-        data = fetch_url(source.url)
+        data = fetch_url(
+            source.url,
+            purpose="feed" if source.source_type == "rss" else "article",
+        )
         if not data:
             continue
         try:

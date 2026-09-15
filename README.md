@@ -16,9 +16,9 @@ This repository contains the verified active-production DSA scraper baseline.
 - Python 3.14.6
 - Wrangler 4.110.0
 - Beautiful Soup 4.15.0
+- lxml 6.1.3
 
-The observed environment lacks an XML parser for Beautiful Soup XML mode. This
-baseline records that current state. Adding lxml should be a separate corrective commit.
+The recorded environment includes lxml for Beautiful Soup XML fallback parsing.
 
 ## Exclusions
 
