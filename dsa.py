@@ -71,6 +71,7 @@ class SourceSpec:
 
 SOURCES: list[SourceSpec] = [
     SourceSpec("springs_of_revolution", "Springs of Revolution", "https://sor4dsa.substack.com/feed", "rss"),
+    SourceSpec("just_break_already", "Just Break Already", "https://justbreakalreadycaucus.substack.com/feed", "rss", include_podcast=True),
     SourceSpec("north_star", "North Star Caucus Blog", "https://www.dsanorthstar.org/1/feed", "rss"),
     SourceSpec("reform_revolution", "Reform & Revolution", "https://reformandrevolution.org/feed/", "rss"),
     SourceSpec("socialist_call", "Socialist Call (Bread & Roses)", "https://socialistcall.com/feed/", "rss"),
@@ -79,6 +80,7 @@ SOURCES: list[SourceSpec] = [
     SourceSpec("spadework", "Spadework", "https://spade.work/rss/", "rss"),
     SourceSpec("power_map", "Power Map Mag (Groundwork)", "https://powermapmag.substack.com/feed", "rss"),
     SourceSpec("building_up", "Building Up (Groundwork)", "https://www.groundworkdsa.com/building-up?format=rss", "rss"),
+    SourceSpec("constellation_starchart", "Starchart (Constellation)", "https://dsaconstellation.com/starchart/", "html"),
     # Sitewide Ghost feed prevents untagged essays, interviews, and statements from being missed.
     # Publication categories are retained as metadata instead of defining discovery coverage.
     SourceSpec("red_star", "Red Star", "https://redstarcaucus.org/rss/", "rss"),
@@ -297,9 +299,17 @@ SOURCE_DOM_CONFIGS = {
         "body": "div.body.markup, div.available-content div.body, article.typography.newsletter-post, article.newsletter-post",
         "exclude": [".subscription-widget-wrap", ".subscribe-widget", ".post-ufi", ".comments-section", ".footer-wrap"]
     },
+    "justbreakalreadycaucus.substack.com": {
+        "body": "div.body.markup, article.typography.newsletter-post.post div.body, article.newsletter-post div.body",
+        "exclude": [".subscription-widget-wrap", ".subscribe-widget", ".post-ufi", ".comments-section", ".footer-wrap", "#substack-comments"]
+    },
     "www.groundworkdsa.com": {
         "body": ".blog-item-content, .entry-content, article.h-entry",
         "exclude": [".item-pagination", ".related-posts", ".sqs-share-buttons"]
+    },
+    "dsaconstellation.com": {
+        "body": ".wp-block-post-content, main .wp-block-post-content, main",
+        "exclude": [".wp-block-post-navigation-link", ".sharedaddy", ".wp-block-comments", ".wp-block-template-part"]
     },
     "caracoldsa.org": {
         "body": ".entry-content",
@@ -1139,10 +1149,19 @@ def parse_any_feed(data: bytes, source: SourceSpec) -> list[dict[str, Any]]:
             pub_date = txt("pubDate") or txt("published") or txt("updated")
             summary = txt("description") or txt("summary") or txt("encoded")
             author = txt("creator") or txt("author")
+            enclosure = item.find("enclosure")
+            enclosure_url = normalize_space(enclosure.get("url", "")) if enclosure else ""
+            enclosure_type = normalize_space(enclosure.get("type", "")) if enclosure else ""
+            is_podcast = bool(enclosure_url and (
+                enclosure_type.lower().startswith("audio/")
+                or "/feed/podcast/" in enclosure_url.lower()
+                or enclosure_url.lower().split("?", 1)[0].endswith(".mp3")
+            ))
             if link:
                 c = make_candidate(source, title, link, pub_date, html_to_text(summary), "rss_feed_bs4_fallback")
                 c["author_hint"] = author
                 c["image_url_hint"] = ""
+                c["content_type_hint"] = "podcast" if is_podcast else "article"
                 candidates.append(c)
         return candidates
 
@@ -1224,8 +1243,15 @@ def parse_any_feed(data: bytes, source: SourceSpec) -> list[dict[str, Any]]:
 
             image_url = ""
             enclosure = item.find("enclosure")
-            if enclosure is not None and enclosure.get("type", "").startswith("image/"):
-                image_url = enclosure.get("url", "")
+            enclosure_url = normalize_space(enclosure.get("url", "")) if enclosure is not None else ""
+            enclosure_type = normalize_space(enclosure.get("type", "")) if enclosure is not None else ""
+            is_podcast = bool(enclosure_url and (
+                enclosure_type.lower().startswith("audio/")
+                or "/feed/podcast/" in enclosure_url.lower()
+                or enclosure_url.lower().split("?", 1)[0].endswith(".mp3")
+            ))
+            if enclosure is not None and enclosure_type.startswith("image/"):
+                image_url = enclosure_url
             if not image_url:
                 media_content = item.find(".//{http://search.yahoo.com/mrss/}content")
                 if media_content is None:
@@ -1244,6 +1270,7 @@ def parse_any_feed(data: bytes, source: SourceSpec) -> list[dict[str, Any]]:
                     "source_guid": source_guid,
                     "tags": categories,
                     "body_html_hint": body_html_hint,
+                    "content_type_hint": "podcast" if is_podcast else "article",
                     "method": "rss_feed"
                 })
 
@@ -1262,6 +1289,7 @@ def parse_any_feed(data: bytes, source: SourceSpec) -> list[dict[str, Any]]:
         c["source_guid"] = item.get("source_guid", "")
         c["tags"] = item.get("tags", [])
         c["body_html_hint"] = item.get("body_html_hint", "")
+        c["content_type_hint"] = item.get("content_type_hint", "article")
         candidates.append(c)
     return candidates
 
@@ -1343,6 +1371,14 @@ def mechanical_metadata(raw_html: str, url: str, fallback_title: str, fallback_d
                 if val and len(val) < 100:
                     author = val
                     break
+
+    if normalized_url_host(url) == "dsaconstellation.com":
+        for paragraph in soup.select("main p, .wp-block-post-content p"):
+            visible_byline = normalize_space(paragraph.get_text(" "))
+            match = re.match(r"(?i)^by\s+(.+?)\s*$", visible_byline)
+            if match and len(match.group(1)) < 100:
+                author = match.group(1).strip(" *")
+                break
 
     pub_date = meta_content("article:published_time", "date", "datePublished", "pubdate", "og:pubdate")
     if not pub_date:
@@ -1442,7 +1478,11 @@ def get_robust_metadata(raw_html: str, url: str, c: dict[str, Any]) -> dict[str,
     pub_date = html_meta.get("pub_date") or c.get("pub_date_hint") or ""
     description = html_meta.get("description") or c.get("snippet") or ""
     image_url = html_meta.get("image_url") or c.get("image_url_hint") or ""
-    content_type = html_meta.get("content_type") or "article"
+    content_type = c.get("content_type_hint") or html_meta.get("content_type") or "article"
+    if c.get("source_key") == "just_break_already":
+        author = "Just Break Already Caucus"
+        if "/twitter/subscribe-card" in image_url or "subscribe-card.jpg" in image_url:
+            image_url = ""
 
     return {
         "title": normalize_space(title),
@@ -1608,6 +1648,8 @@ def is_probably_non_article_candidate(c: dict[str, Any]) -> tuple[bool, str]:
         return True, "navigation/static title excluded"
     if source_key in {"mug_latest", "mug_statements"} and MUG_STATIC_PATH_RE.search(path):
         return True, "MUG static/nav/archive page excluded"
+    if source_key == "constellation_starchart" and not re.fullmatch(r"/20\d{2}/\d{2}/\d{2}/[^/]+/?", path):
+        return True, "Constellation non-dated navigation/archive page excluded"
     if source_key == "communist_caucus" and STATIC_PATH_RE.search(path):
         return True, "Communist Caucus static/nav/archive page excluded"
     if source_key not in {"mug_latest", "mug_statements", "communist_caucus"} and STATIC_PATH_RE.search(path):
@@ -1827,11 +1869,13 @@ def generate_processed_links_tree() -> None:
 RSS_CAUCUS_MAP = {
     "Springs of Revolution": ["Springs of Revolution"],
     "Groundwork": ["Building Up (Groundwork)", "Power Map Mag (Groundwork)"],
+    "Constellation": ["Starchart (Constellation)"],
     "Caracol": ["Caracol"],
     "Communist Caucus": ["Communist Caucus Bulletin", "Spadework"],
     "Emerge": ["Emerge", "Partisan Magazine"],
     "Libertarian Socialist Caucus": ["LSC Pamphlets", "LSC Statements"],
     "Liberation": ["Liberation"],
+    "Just Break Already": ["Just Break Already"],
     "Marxist Unity Group": ["Marxist Unity Group", "Light & Air (MUG)"],
     "North Star": ["North Star Caucus Blog"],
     "Red Star": ["Red Star", "Zenith (Red Star)", "Red Star Newsletter"],
@@ -1886,14 +1930,14 @@ def generate_rss_feed() -> None:
     with db_session() as conn:
         rows = conn.execute("""
             SELECT id, source, title, link, pub_date, author, description,
-                   date_fetched, article_text
+                   date_fetched, article_text, content_type
             FROM intel_feed
             WHERE COALESCE(metadata_status, '') != 'skipped_short_article'
               AND COALESCE(link, '') != ''
             ORDER BY COALESCE(pub_date, date_fetched) DESC
         """).fetchall()
     articles = []
-    for article_id, source, title, link, pub_date, author, description, date_fetched, article_text in rows:
+    for article_id, source, title, link, pub_date, author, description, date_fetched, article_text, content_type in rows:
         caucus = RSS_SOURCE_TO_CAUCUS.get(source)
         if not caucus:
             continue
@@ -1902,7 +1946,7 @@ def generate_rss_feed() -> None:
             "source": source or "", "caucus": caucus, "title": title or "Untitled",
             "link": link or "", "pub_date": pub_date or "", "author": author or "",
             "description": description or "", "date_fetched": date_fetched or "",
-            "text": article_text or "",
+            "text": article_text or "", "content_type": content_type or "article",
         })
     RSS_FILE.write_bytes(_build_static_rss(articles))
     RSS_DATA_FILE.write_text(json.dumps({"articles": articles}, ensure_ascii=False), encoding="utf-8")
@@ -1934,12 +1978,14 @@ export default {
     const caucuses = new Set(url.searchParams.getAll("caucus"));
     const publications = new Set(url.searchParams.getAll("publication"));
     const query = url.searchParams.get("q") || "";
+    const types = new Set(url.searchParams.getAll("type"));
     const filtered = articles.filter(article =>
       (!caucuses.size || caucuses.has(article.caucus)) &&
       (!publications.size || publications.has(article.source)) &&
+      (!types.size || types.has(article.content_type || "article")) &&
       (!query || matches(article, query))
     );
-    const label = [caucuses.size ? [...caucuses].join(", ") : "All caucuses", publications.size ? [...publications].join(", ") : "All publications", query ? `Search: ${query}` : ""].filter(Boolean).join(" | ");
+    const label = [caucuses.size ? [...caucuses].join(", ") : "All caucuses", publications.size ? [...publications].join(", ") : "All publications", types.size ? [...types].join(", ") : "All content", query ? `Search: ${query}` : ""].filter(Boolean).join(" | ");
     const items = filtered.map(a => `<item><title>${esc(a.title)}</title><link>${esc(a.link)}</link><guid isPermaLink="false">caucus-commons:${esc(a.id)}</guid><pubDate>${esc(rfc822(a.pub_date || a.date_fetched))}</pubDate><author>${esc(a.author)}</author><category>${esc(a.caucus)}</category><category>${esc(a.source)}</category><description>${esc(a.description)}</description></item>`).join("");
     const xml = `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>Caucus Commons — ${esc(label)}</title><link>${esc(new URL("/caucuscommons.html", url).href)}</link><description>Customized Caucus Commons feed.</description><language>en-us</language><lastBuildDate>${new Date().toUTCString()}</lastBuildDate>${items}</channel></rss>`;
     return new Response(xml, {headers: {"Content-Type":"application/rss+xml; charset=utf-8", "Cache-Control":"public, max-age=300"}});
@@ -2010,10 +2056,12 @@ def generate_dashboard() -> None:
         "Emerge": {"sources": ["Emerge", "Partisan Magazine"], "color": "rgb(222, 112, 122)", "text": "white"},
         "Marxist Unity Group": {"sources": ["Marxist Unity Group", "Light & Air (MUG)"], "color": "rgb(117, 139, 245)", "text": "white"},
         "Reform and Revolution": {"sources": ["Reform & Revolution"], "color": "rgb(111, 51, 64)", "text": "white"},
+        "Constellation": {"sources": ["Starchart (Constellation)"], "color": "#9278D3", "text": "white"},
         "Red Star": {"sources": ["Red Star", "Zenith (Red Star)", "Red Star Newsletter"], "color": "rgb(236, 97, 92)", "text": "white"},
         "21st Century Socialism": {"sources": ["21st Century Socialism"], "color": "#ffcd00", "text": "black"},
         "Springs of Revolution": {"sources": ["Springs of Revolution"], "color": "rgb(164, 75, 115)", "text": "white"},
-        "Liberation": {"sources": ["Liberation"], "color": "rgb(217, 57, 51)", "text": "white"}
+        "Liberation": {"sources": ["Liberation"], "color": "rgb(217, 57, 51)", "text": "white"},
+        "Just Break Already": {"sources": ["Just Break Already"], "color": "rgb(239, 55, 45)", "text": "black"}
     }
     
     SOURCE_TO_CAUCUS = {}
@@ -2059,7 +2107,7 @@ def generate_dashboard() -> None:
             "dt_sec": dt_obj.timestamp()
         })
 
-    full_articles = [a for a in articles if a["classification"] == "article_full"]
+    full_articles = [a for a in articles if a["classification"] in {"article_full", "article_short"}]
     full_articles.sort(key=lambda x: x["dt"])
     
     periods = []
@@ -2114,6 +2162,7 @@ def generate_dashboard() -> None:
             "local_source": a["local_source"],
             "local_text": a["local_text"],
             "text": clean_dashboard_blurb(a["text"]),
+            "ctype": a["ctype"],
             "dt_sec": a["dt_sec"]
         })
         
@@ -2351,6 +2400,15 @@ hr {{
   font-size: 9pt;
   font-style: normal;
 }}
+.podcast-card {{
+  padding-top: 0.28em;
+  padding-bottom: 0.28em;
+  background: #fffef0;
+}}
+.podcast-card .line-item-title {{ font-size: 11pt; line-height: 125%; }}
+.podcast-card .line-item-meta {{ margin: 0.18em 0 0.12em 0; font-size: 7.85pt; line-height: 125%; }}
+.podcast-card .line-item-desc {{ display: none; }}
+.podcast-badge {{ display: inline-block; margin-left: 0.5em; padding: 0.08em 0.38em; border: 1px solid #111; background: #fff; color: #111; font-size: 7pt; text-transform: uppercase; }}
 .line-item-desc {{
   margin: 0.35em 0 0.45em 0;
   color: #000000;
@@ -2395,7 +2453,7 @@ hr {{
 </head>
 <body>
 <div class="marquee-header" role="region" aria-label="Caucus Commons announcements">
-<span class="marquee-message">[14TH OF SEPT. 2026] Springs of Revolution is now featured on Caucus Commons. Red Star and Libertarian Socialist Caucus now have improved scrape methods, and their missing articles are now backfilled.</span>
+<span class="marquee-message">[15TH OF SEPT. 2026] Constellation and Springs of Revolution are now featured on Caucus Commons. Red Star and Libertarian Socialist Caucus now have improved scrape methods, and their missing articles are now backfilled.</span>
 <span class="marquee-message">Thank you for visiting Caucus Commons today! &ndash;Marc B.</span>
 </div>
 <div class="title-bar">
@@ -2413,6 +2471,7 @@ hr {{
 <div class="rss-field"><label for="rss-caucuses">Caucuses</label><select id="rss-caucuses" multiple></select></div>
 <div class="rss-field"><label for="rss-publications">Publications</label><select id="rss-publications" multiple></select></div>
 </div>
+<div class="rss-field"><label for="rss-content-types">Content types</label><select id="rss-content-types" multiple><option value="article">Written posts</option><option value="podcast">Podcasts</option></select></div>
 <div class="rss-field"><label for="rss-keywords">Keyword search</label><input id="rss-keywords" type="text" placeholder='Words, &quot;exact phrase&quot;, or -excluded'></div>
 <div class="rss-actions"><button type="button" id="rss-open-feed">Open Feed</button><button type="button" id="rss-copy">Copy Feed URL</button><button type="button" id="rss-default">Default Feed</button><button type="button" id="rss-close">Close</button></div>
 <a class="rss-url" id="rss-url" href="caucuscommons.xml">caucuscommons.xml</a>
@@ -2421,7 +2480,7 @@ hr {{
 <blockquote>
 <div class="border">
 <h1>Caucus Commons</h1>
-<p class="fst">Caucus Commons is an aggregator for various publications from caucuses in the <a href="https://act.dsausa.org/donate/membership/">Democratic Socialists of America</a>.</p>
+<p class="fst">Caucus Commons is an aggregator for caucus publications within the <a href="https://act.dsausa.org/donate/membership/">Democratic Socialists of America</a>.</p>
 <hr />
 
 <div class="controls-wrapper">
@@ -2452,6 +2511,7 @@ document.addEventListener("DOMContentLoaded", () => {{
     const rssCaucuses = document.getElementById("rss-caucuses");
     const rssPublications = document.getElementById("rss-publications");
     const rssKeywords = document.getElementById("rss-keywords");
+    const rssContentTypes = document.getElementById("rss-content-types");
     const rssUrl = document.getElementById("rss-url");
     Object.keys(CAUCUS_MAP).forEach(caucus => rssCaucuses.add(new Option(caucus, caucus)));
     const selectedValues = select => new Set(Array.from(select.selectedOptions, option => option.value));
@@ -2467,6 +2527,7 @@ document.addEventListener("DOMContentLoaded", () => {{
         const url = new URL("/rss", window.location.origin);
         selectedValues(rssCaucuses).forEach(value => url.searchParams.append("caucus", value));
         selectedValues(rssPublications).forEach(value => url.searchParams.append("publication", value));
+        selectedValues(rssContentTypes).forEach(value => url.searchParams.append("type", value));
         if (rssKeywords.value.trim()) url.searchParams.set("q", rssKeywords.value.trim());
         rssUrl.href = url.href; rssUrl.textContent = url.href;
     }}
@@ -2477,6 +2538,7 @@ document.addEventListener("DOMContentLoaded", () => {{
     document.getElementById("rss-default").onclick = () => window.open("caucuscommons.xml", "_blank", "noopener");
     rssCaucuses.addEventListener("change", updateRssPublications);
     rssPublications.addEventListener("change", updateRssUrl);
+    rssContentTypes.addEventListener("change", updateRssUrl);
     rssKeywords.addEventListener("input", updateRssUrl);
     rssModal.addEventListener("click", event => {{ if (event.target === rssModal) rssModal.classList.remove("open"); }});
     const bCont = document.getElementById("bubbles-container");
@@ -2521,12 +2583,13 @@ document.addEventListener("DOMContentLoaded", () => {{
 
     function createLineItem(a) {{
         const div = document.createElement("div");
-        div.className = "line-item";
+        const isPodcast = a.ctype === "podcast";
+        div.className = isPodcast ? "line-item podcast-card" : "line-item";
         const cColor = CAUCUS_MAP[a.caucus] ? CAUCUS_MAP[a.caucus].color : "#999";
         const cText = CAUCUS_MAP[a.caucus] ? CAUCUS_MAP[a.caucus].text : "#fff";
         div.innerHTML = `
             <div class="line-item-header">
-                <h3 class="line-item-title"><a href="${{a.link}}" target="_blank">${{a.title}}</a></h3>
+                <h3 class="line-item-title"><a href="${{a.link}}" target="_blank">${{a.title}}</a>${{isPodcast ? '<span class="podcast-badge">Podcast</span>' : ''}}</h3>
                 <span class="caucus-label" style="background:${{cColor}}; color:${{cText}}">${{a.caucus}}</span>
             </div>
             <div class="line-item-meta">${{a.source}} · ${{a.display_date}} · ${{a.author}}</div>
