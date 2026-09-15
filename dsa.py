@@ -2170,6 +2170,50 @@ p.title {{
 .title-bar p.title:last-child {{ text-align: right; }}
 .title-actions {{ margin: 1%; text-align: right; }}
 .title-actions p.title {{ margin: 0; text-align: right; }}
+.marquee-header {{
+  position: relative;
+  height: 1.55rem;
+  overflow: hidden;
+  border-top: 1px solid rgba(255, 204, 0, 0.45);
+  border-bottom: 1px solid rgba(255, 204, 0, 0.45);
+  color: #ffcc00;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 9pt;
+  font-weight: bold;
+  line-height: 1.55rem;
+  white-space: nowrap;
+}}
+.marquee-message {{
+  position: absolute;
+  top: 0;
+  left: 0;
+  min-width: max-content;
+  padding-left: 100%;
+  will-change: transform;
+  animation: marquee-cycle 112s linear infinite;
+}}
+.marquee-message:nth-child(2) {{ animation-delay: 56s; }}
+@keyframes marquee-cycle {{
+  0% {{ transform: translateX(0); visibility: visible; }}
+  49.9% {{ transform: translateX(-100%); visibility: visible; }}
+  50%, 100% {{ transform: translateX(-100%); visibility: hidden; }}
+}}
+@media (prefers-reduced-motion: reduce) {{
+  .marquee-header {{
+    height: auto;
+    line-height: 1.35;
+    padding: 0.3rem 1%;
+    white-space: normal;
+  }}
+  .marquee-message {{
+    position: static;
+    display: none;
+    min-width: 0;
+    padding-left: 0;
+    animation: none;
+  }}
+  .marquee-message:first-child {{ display: block; }}
+}}
 .rss-link-button {{ background: none; border: 0; color: #ffcc00; cursor: pointer; font: inherit; font-weight: bold; padding: 0; text-decoration: underline; }}
 .rss-modal {{ display: none; position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,.6); padding: 5vh 1rem; box-sizing: border-box; }}
 .rss-modal.open {{ display: block; }}
@@ -2350,6 +2394,10 @@ hr {{
 </style>
 </head>
 <body>
+<div class="marquee-header" role="region" aria-label="Caucus Commons announcements">
+<span class="marquee-message">[14TH OF SEPT. 2026] Springs of Revolution is now featured on Caucus Commons. Red Star and Libertarian Socialist Caucus now have improved scrape methods, and their missing articles are now backfilled.</span>
+<span class="marquee-message">Thank you for visiting Caucus Commons today! &ndash;Marc B.</span>
+</div>
 <div class="title-bar">
 <p class="title">Contact: <a href="mailto:upturn_sassy8s@icloud.com">upturn_sassy8s@icloud.com</a> 2026</p>
 <div class="title-actions">
