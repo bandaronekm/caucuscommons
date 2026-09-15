@@ -79,6 +79,7 @@ SOURCES: list[SourceSpec] = [
     SourceSpec("spadework", "Spadework", "https://spade.work/rss/", "rss"),
     SourceSpec("power_map", "Power Map Mag (Groundwork)", "https://powermapmag.substack.com/feed", "rss"),
     SourceSpec("building_up", "Building Up (Groundwork)", "https://www.groundworkdsa.com/building-up?format=rss", "rss"),
+    SourceSpec("constellation_starchart", "Starchart (Constellation)", "https://dsaconstellation.com/starchart/", "html"),
     # Sitewide Ghost feed prevents untagged essays, interviews, and statements from being missed.
     # Publication categories are retained as metadata instead of defining discovery coverage.
     SourceSpec("red_star", "Red Star", "https://redstarcaucus.org/rss/", "rss"),
@@ -300,6 +301,10 @@ SOURCE_DOM_CONFIGS = {
     "www.groundworkdsa.com": {
         "body": ".blog-item-content, .entry-content, article.h-entry",
         "exclude": [".item-pagination", ".related-posts", ".sqs-share-buttons"]
+    },
+    "dsaconstellation.com": {
+        "body": ".wp-block-post-content, main .wp-block-post-content, main",
+        "exclude": [".wp-block-post-navigation-link", ".sharedaddy", ".wp-block-comments", ".wp-block-template-part"]
     },
     "caracoldsa.org": {
         "body": ".entry-content",
@@ -1344,6 +1349,14 @@ def mechanical_metadata(raw_html: str, url: str, fallback_title: str, fallback_d
                     author = val
                     break
 
+    if normalized_url_host(url) == "dsaconstellation.com":
+        for paragraph in soup.select("main p, .wp-block-post-content p"):
+            visible_byline = normalize_space(paragraph.get_text(" "))
+            match = re.match(r"(?i)^by\s+(.+?)\s*$", visible_byline)
+            if match and len(match.group(1)) < 100:
+                author = match.group(1).strip(" *")
+                break
+
     pub_date = meta_content("article:published_time", "date", "datePublished", "pubdate", "og:pubdate")
     if not pub_date:
         date_selectors = [
@@ -1608,6 +1621,8 @@ def is_probably_non_article_candidate(c: dict[str, Any]) -> tuple[bool, str]:
         return True, "navigation/static title excluded"
     if source_key in {"mug_latest", "mug_statements"} and MUG_STATIC_PATH_RE.search(path):
         return True, "MUG static/nav/archive page excluded"
+    if source_key == "constellation_starchart" and not re.fullmatch(r"/20\d{2}/\d{2}/\d{2}/[^/]+/?", path):
+        return True, "Constellation non-dated navigation/archive page excluded"
     if source_key == "communist_caucus" and STATIC_PATH_RE.search(path):
         return True, "Communist Caucus static/nav/archive page excluded"
     if source_key not in {"mug_latest", "mug_statements", "communist_caucus"} and STATIC_PATH_RE.search(path):
@@ -1827,6 +1842,7 @@ def generate_processed_links_tree() -> None:
 RSS_CAUCUS_MAP = {
     "Springs of Revolution": ["Springs of Revolution"],
     "Groundwork": ["Building Up (Groundwork)", "Power Map Mag (Groundwork)"],
+    "Constellation": ["Starchart (Constellation)"],
     "Caracol": ["Caracol"],
     "Communist Caucus": ["Communist Caucus Bulletin", "Spadework"],
     "Emerge": ["Emerge", "Partisan Magazine"],
@@ -2010,6 +2026,7 @@ def generate_dashboard() -> None:
         "Emerge": {"sources": ["Emerge", "Partisan Magazine"], "color": "rgb(222, 112, 122)", "text": "white"},
         "Marxist Unity Group": {"sources": ["Marxist Unity Group", "Light & Air (MUG)"], "color": "rgb(117, 139, 245)", "text": "white"},
         "Reform and Revolution": {"sources": ["Reform & Revolution"], "color": "rgb(111, 51, 64)", "text": "white"},
+        "Constellation": {"sources": ["Starchart (Constellation)"], "color": "#9278D3", "text": "white"},
         "Red Star": {"sources": ["Red Star", "Zenith (Red Star)", "Red Star Newsletter"], "color": "rgb(236, 97, 92)", "text": "white"},
         "21st Century Socialism": {"sources": ["21st Century Socialism"], "color": "#ffcd00", "text": "black"},
         "Springs of Revolution": {"sources": ["Springs of Revolution"], "color": "rgb(164, 75, 115)", "text": "white"},
@@ -2059,7 +2076,7 @@ def generate_dashboard() -> None:
             "dt_sec": dt_obj.timestamp()
         })
 
-    full_articles = [a for a in articles if a["classification"] == "article_full"]
+    full_articles = [a for a in articles if a["classification"] in {"article_full", "article_short"}]
     full_articles.sort(key=lambda x: x["dt"])
     
     periods = []
