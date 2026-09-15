@@ -2412,7 +2412,7 @@ hr {{
 </head>
 <body>
 <div class="marquee-header" role="region" aria-label="Caucus Commons announcements">
-<span class="marquee-message">[14TH OF SEPT. 2026] Springs of Revolution is now featured on Caucus Commons. Red Star and Libertarian Socialist Caucus now have improved scrape methods, and their missing articles are now backfilled.</span>
+<span class="marquee-message">[15TH OF SEPT. 2026] Constellation and Springs of Revolution are now featured on Caucus Commons. Red Star and Libertarian Socialist Caucus now have improved scrape methods, and their missing articles are now backfilled.</span>
 <span class="marquee-message">Thank you for visiting Caucus Commons today! &ndash;Marc B.</span>
 </div>
 <div class="title-bar">
