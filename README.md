@@ -29,3 +29,17 @@ node_modules, and July experimental material are intentionally excluded.
 
 The committed wrapper and LaunchAgent document current operation on this Mac and
 contain absolute paths under `/Users/marcbandaronek`.
+
+## License
+
+Copyright 2026 Marc Bandaronek.
+
+Caucus Commons is source-available under the PolyForm Noncommercial License
+1.0.0. Noncommercial use, modification, and distribution are permitted subject
+to the terms in LICENSE.
+
+Commercial use is not permitted without a separate license from the copyright
+holder.
+
+Third-party dependencies and components remain subject to their respective
+licenses.
